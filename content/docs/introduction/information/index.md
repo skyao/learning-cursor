@@ -17,3 +17,15 @@ description: >
 
 官方论坛：https://forum.cursor.com/
 
+## 文档
+
+### Cursor 中文文档
+
+https://cursordocs.com/
+
+Cursor 中文文档，完整同步官方最新内容，为 Cursor 中文用户提供全面学习支持，覆盖Cursor所有功能，包括Composer、Chat、Tab、Context等。
+
+### Cursor中文网
+
+https://cursor.qiannianlu.com/
+
