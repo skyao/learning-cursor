@@ -136,10 +136,183 @@ chmod +x cursor.desktop
 正常情况下，linux mint 默认的 Cinnamon Menu 应用启动器会识别到 `~/.local/share/applications/` 下的这个 cursor 应用，然后将其放置在开始菜单中的 Programming 分类中，从这里也可以打开 cursor。另外 Synapse 之类的应用程序启动器也可以识别到 cursor 了，alt + g 快捷键也可以方便的启动 cursor。
 
 
+## 启动后报错
+
+### Terminal sandbox count not start
+
+启动后报错如下：
+
+![](./images/terminal-sandbox.png)
+
+点击 Learn More 之后打开页面：
+
+https://cursor.com/docs/agent/tools/terminal
 
 
+```bash
+cd ~/temp
 
+curl -fsSL https://downloads.cursor.com/lab/enterprise/cursor-sandbox-apparmor_0.6.0_all.deb -o cursor-sandbox-apparmor.deb
+sudo dpkg -i cursor-sandbox-apparmor.deb
+```
 
+或者直接下载 deb 文件后执行安装。安装完成之后重启 cursor 。但我重启之后，问题依旧，还是弹出同样的提示框。
 
+参考如下文章：
 
+https://www.zhihu.com/question/14311730226
 
+#### 一次性手动修复
+
+备份原有 profile:
+
+```bash
+sudo cp /etc/apparmor.d/cursor-sandbox /etc/apparmor.d/cursor-sandbox.bak
+```
+
+替换为完整的 cursor-sandbox profile:
+
+```bash
+sudo tee /etc/apparmor.d/cursor-sandbox > /dev/null << 'EOF'
+profile cursor_sandbox /usr/share/cursor/resources/app/resources/helpers/cursorsandbox {
+  file,
+  /** ix,
+
+  capability sys_admin,
+  capability net_admin,
+  capability chown,
+  capability setuid,
+  capability setgid,
+  capability setpcap,
+  capability dac_override,
+
+  userns,
+  mount,
+  remount,
+  umount,
+  unix,
+  network netlink raw,
+  network unix,
+  network inet stream,
+
+  signal send peer=cursor_sandbox,
+  signal receive peer=cursor_sandbox,
+
+  /usr/share/cursor/resources/app/resources/helpers/cursorsandbox mr,
+}
+
+profile cursor_sandbox_remote /home/*/.cursor-server/bin/*/*/resources/helpers/{cursor-sandbox,cursorsandbox} {
+  file,
+  /** ix,
+
+  capability sys_admin,
+  capability net_admin,
+  capability chown,
+  capability setuid,
+  capability setgid,
+  capability setpcap,
+  capability dac_override,
+
+  userns,
+  mount,
+  remount,
+  umount,
+  unix,
+  network netlink raw,
+  network unix,
+  network inet stream,
+
+  signal send peer=cursor_sandbox,
+  signal receive peer=cursor_sandbox,
+
+  /home/*/.cursor-server/bin/*/*/resources/helpers/{cursor-sandbox,cursorsandbox} mr,
+}
+EOF
+```
+
+为 Cursor 主程序创建独立 profile
+
+```bash
+sudo tee /etc/apparmor.d/cursor > /dev/null << 'EOF'
+abi <abi/4.0>,
+include <tunables/global>
+
+profile cursor /usr/share/cursor/cursor flags=(unconfined) {
+  userns,
+  include if exists <local/cursor>
+}
+EOF
+```
+
+重新加载 AppArmor profile: 
+
+```bash
+sudo apparmor_parser -r /etc/apparmor.d/cursor-sandbox
+sudo apparmor_parser -r /etc/apparmor.d/cursor
+```
+
+锁定文件防止被覆盖:
+
+```bash
+sudo chattr +i /etc/apparmor.d/cursor-sandbox
+```
+
+注意：升级 Cursor 前需先解锁：sudo chattr -i /etc/apparmor.d/cursor-sandbox，升级后重新锁定。
+
+#### 永久自动修复方案
+
+保存修复版 profile 到安全位置:
+
+```bash
+sudo mkdir -p /etc/cursor-apparmor-fix
+sudo cp /etc/apparmor.d/cursor-sandbox /etc/cursor-apparmor-fix/cursor-sandbox.fixed
+```
+
+创建修复脚本:
+
+```bash
+sudo tee /etc/cursor-apparmor-fix/apply-fix.sh > /dev/null << 'EOF'
+#!/bin/bash
+# 自动修复 Cursor AppArmor profile（每次 Cursor 升级后触发）
+
+FIXED_PROFILE="/etc/cursor-apparmor-fix/cursor-sandbox.fixed"
+TARGET="/etc/apparmor.d/cursor-sandbox"
+LOG="/var/log/cursor-apparmor-fix.log"
+
+echo "[$(date)] 开始应用 Cursor AppArmor 修复..." >> "$LOG"
+
+chattr -i "$TARGET" 2>/dev/null
+cp "$FIXED_PROFILE" "$TARGET"
+chattr +i "$TARGET"
+
+apparmor_parser -r "$TARGET" 2>> "$LOG" && \
+  echo "[$(date)] cursor-sandbox profile 重载成功" >> "$LOG" || \
+  echo "[$(date)] 警告：cursor-sandbox profile 重载失败" >> "$LOG"
+
+if [ ! -f /etc/apparmor.d/cursor ]; then
+  cat > /etc/apparmor.d/cursor << 'PROFILE'
+abi <abi/4.0>,
+include <tunables/global>
+
+profile cursor /usr/share/cursor/cursor flags=(unconfined) {
+  userns,
+  include if exists <local/cursor>
+}
+PROFILE
+  apparmor_parser -r /etc/apparmor.d/cursor 2>> "$LOG"
+fi
+
+echo "[$(date)] 修复完成" >> "$LOG"
+EOF
+
+sudo chmod +x /etc/cursor-apparmor-fix/apply-fix.sh
+```
+
+创建 dpkg 钩子:
+
+```bash
+sudo tee /etc/apt/apt.conf.d/99-cursor-apparmor-fix > /dev/null << 'EOF'
+// 每次 cursor 包升级后自动重新应用 AppArmor 修复
+DPkg::Post-Invoke {"if dpkg -l cursor 2>/dev/null | grep -q '^ii'; then /etc/cursor-apparmor-fix/apply-fix.sh; fi";};
+EOF
+```
